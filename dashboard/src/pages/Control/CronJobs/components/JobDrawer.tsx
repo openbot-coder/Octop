@@ -3,6 +3,7 @@ import {
   Drawer,
   Form,
   Input,
+  InputNumber,
   Select,
   Switch,
   Button,
@@ -483,10 +484,56 @@ export function JobDrawer({
         </Form.Item>
 
         <Form.Item
+          name="script"
+          label={t("cronJobs.form.script")}
+          tooltip={t("cronJobs.form.scriptTooltip")}
+          extra={
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {t("cronJobs.form.scriptExtra")}
+            </Text>
+          }
+        >
+          <Input
+            allowClear
+            placeholder="/home/vex1023/.octop/scripts/daily.py --symbol 600519"
+            style={{ fontFamily: "monospace" }}
+          />
+        </Form.Item>
+
+        <Form.Item
+          noStyle
+          shouldUpdate={(prev, next) => prev.script !== next.script}
+        >
+          {({ getFieldValue }) =>
+            String(getFieldValue("script") || "").trim() ? (
+              <Form.Item
+                name="script_timeout_s"
+                label={t("cronJobs.form.scriptTimeout")}
+                tooltip={t("cronJobs.form.scriptTimeoutTooltip")}
+              >
+                <InputNumber min={1} max={3600} style={{ width: 160 }} />
+              </Form.Item>
+            ) : null
+          }
+        </Form.Item>
+
+        <Form.Item
           name="prompt"
           label={t("cronJobs.form.agentPrompt")}
           rules={[
-            { required: true, message: t("cronJobs.form.agentPromptRequired") },
+            ({ getFieldValue }) => ({
+              validator(_rule, value: string) {
+                const hasScript = Boolean(
+                  String(getFieldValue("script") || "").trim(),
+                );
+                if (hasScript || String(value || "").trim()) {
+                  return Promise.resolve();
+                }
+                return Promise.reject(
+                  new Error(t("cronJobs.form.promptOrScriptRequired")),
+                );
+              },
+            }),
             {
               max: CRON_PROMPT_MAX_LEN,
               message: t("cronJobs.form.agentPromptTooLong", {

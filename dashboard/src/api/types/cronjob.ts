@@ -77,6 +77,10 @@ export interface OctopCronRow {
   task_type: "text" | "agent";
   model: string | null;
   mcp_servers?: string[];
+  /** Absolute command line executed before the task; its stdout becomes the prompt. */
+  script?: string | null;
+  /** Seconds before the script is killed (1-3600, default 300). */
+  script_timeout_s?: number | null;
   last_run_at: number | null;
   last_status: string | null;
   last_error: string | null;
@@ -93,6 +97,8 @@ export interface OctopCronCreateBody {
   model?: string | null;
   task_type?: "text" | "agent";
   mcp_servers?: string[];
+  script?: string | null;
+  script_timeout_s?: number | null;
 }
 
 /** Body sent to PATCH /api/agents/:id/cron/:cron_id */
@@ -106,4 +112,6 @@ export interface OctopCronPatchBody {
   model?: string | null;
   task_type?: "text" | "agent";
   mcp_servers?: string[];
+  script?: string | null;
+  script_timeout_s?: number | null;
 }

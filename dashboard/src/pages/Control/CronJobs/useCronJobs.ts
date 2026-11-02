@@ -36,6 +36,10 @@ export interface CronJobFormValues {
   run_at?: string | Dayjs;
   _preset?: string;
   prompt: string;
+  /** Absolute command line run before the task; stdout replaces the prompt. */
+  script?: string;
+  /** Seconds before the script is killed (1-3600). */
+  script_timeout_s?: number;
   task_type: "text" | "agent";
   model?: string;
   fresh_thread: boolean;
@@ -87,6 +91,8 @@ function fromOctop(row: OctopCronRow, timezone: string): CronJob {
       octop_session_key: row.session_key,
       octop_model: row.model,
       octop_task_type: row.task_type,
+      octop_script: row.script ?? null,
+      octop_script_timeout_s: row.script_timeout_s ?? null,
       octop_mcp_servers: row.mcp_servers ?? [],
       octop_last_run_at: row.last_run_at,
       octop_last_status: row.last_status,
@@ -126,6 +132,11 @@ export function jobToFormValues(
     run_at: once ? onceRunAtFromTrigger(rawTrigger) : undefined,
     prompt,
     task_type: job.task_type === "text" ? "text" : "agent",
+    script: typeof meta.octop_script === "string" ? meta.octop_script : "",
+    script_timeout_s:
+      typeof meta.octop_script_timeout_s === "number"
+        ? meta.octop_script_timeout_s
+        : 300,
     model: defaultModelToForm(
       job.model ??
         (typeof meta.octop_model === "string" ? meta.octop_model : undefined),
@@ -185,6 +196,8 @@ function toOctopCreateBody(values: CronJobFormValues) {
     enabled: Boolean(values.enabled),
     model: defaultModelFromForm(values.model),
     mcp_servers: values.mcp_servers ?? [],
+    script: (values.script || "").trim() || null,
+    script_timeout_s: values.script_timeout_s ?? 300,
   };
 }
 
