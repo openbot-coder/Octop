@@ -58,6 +58,8 @@ class CronCreateSpec:
     model: str | None = None
     task_type: str = "agent"
     mcp_servers: list[str] = field(default_factory=list)
+    script: str | None = None
+    script_timeout_s: int | None = None
     enabled: bool = True
     meta: dict[str, Any] = field(default_factory=dict)
     username: str | None = None
@@ -140,7 +142,11 @@ class CronManager:
                 cron_id=spec.cron_id,
                 agent_id=spec.agent_id,
                 user_id=spec.user_id,
-                name=require_cron_name(spec.name, prompt=spec.prompt, cron_id=spec.cron_id),
+                name=require_cron_name(
+                    spec.name,
+                    prompt=spec.prompt or spec.script or "",
+                    cron_id=spec.cron_id,
+                ),
                 trigger=spec.trigger,
                 prompt=spec.prompt,
                 session_key=session_key,
@@ -149,6 +155,8 @@ class CronManager:
                 task_type=normalize_cron_task_type(spec.task_type),
                 mcp_servers=list(spec.mcp_servers or []),
                 enabled=spec.enabled,
+                script=spec.script,
+                script_timeout_s=spec.script_timeout_s,
             )
             row = self._repos.cron_repo.get(spec.cron_id)
             assert row is not None
@@ -160,7 +168,7 @@ class CronManager:
                 actor=spec.username or str(spec.user_id),
                 action="cron.create",
                 target=spec.cron_id,
-                payload=spec.prompt[:80],
+                payload=(spec.prompt or spec.script or "")[:80],
             )
             logger.info("CronJob %s created for agent %s", spec.cron_id, spec.agent_id)
             return row
@@ -197,6 +205,8 @@ class CronManager:
         task_type: str | None = None,
         model: str | None | object = UNSET,
         mcp_servers: list[str] | None | object = UNSET,
+        script: str | None | object = UNSET,
+        script_timeout_s: int | None | object = UNSET,
     ) -> CronJobRow:
         enabled_bool: bool | None = bool(enabled) if enabled is not None else None
         async with self._lock:
@@ -229,6 +239,10 @@ class CronManager:
                 repo_kwargs["mcp_servers"] = (
                     list(mcp_servers) if isinstance(mcp_servers, list) else []
                 )
+            if script is not UNSET:
+                repo_kwargs["script"] = script if isinstance(script, str) else None
+            if script_timeout_s is not UNSET:
+                repo_kwargs["script_timeout_s"] = script_timeout_s
             self._repos.cron_repo.update(cron_id, **repo_kwargs)
             row = self._repos.cron_repo.get(cron_id)
             if row is None:

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from octop.api.common.agent import assert_agent_access, require_agent_row, user_owns_agent
 from octop.api.deps import current_user, get_server
 from octop.infra.agents.experts.catalog import resolve_agent_display_task_examples
+from octop.infra.cron.exec_script import normalize_script_spec, normalize_script_timeout
 from octop.infra.cron.task_type import (
     normalize_cron_task_type,
     require_cron_name,
@@ -27,13 +28,25 @@ class CronCreateBody(BaseModel):
     trigger: str = Field(
         description="Examples: cron:0 9 * * *, interval:3600, date:2030-01-01T08:00:00, or agently:INSTANCE_ID for new mail events."
     )
-    prompt: str
+    prompt: str | None = None
     session_key: str | None = None
     fresh_thread: bool = False
     enabled: bool = True
     model: str | None = None
     task_type: str = "text"
     mcp_servers: list[str] = Field(default_factory=list)
+    script: str | None = Field(
+        default=None,
+        description=(
+            "Command line to run before delivery; its stdout becomes the prompt. "
+            "Must resolve inside OCTOP_CRON_SCRIPT_ROOTS. Admin only. "
+            "Empty output skips the run without contacting the model."
+        ),
+    )
+    script_timeout_s: int | None = Field(
+        default=None,
+        description="Seconds before the script is killed (1-3600, default 300).",
+    )
 
 
 class CronPatchBody(BaseModel):
@@ -49,6 +62,8 @@ class CronPatchBody(BaseModel):
     model: str | None = None
     task_type: str | None = None
     mcp_servers: list[str] | None = None
+    script: str | None = None
+    script_timeout_s: int | None = None
 
 
 class CronExamplesResponse(BaseModel):
@@ -73,6 +88,32 @@ def _assert_cron_manage(
         raise OctopError(ErrorCode.NOT_FOUND, "cron job not found")
     if not _user_may_manage_agent_cron(agent_row=agent_row, user=user):
         raise OctopError(ErrorCode.FORBIDDEN, "cron job not accessible to user")
+
+
+def _resolve_prompt_and_script(
+    *,
+    user: Any,
+    prompt: str | None,
+    script: str | None,
+    script_timeout_s: int | None,
+) -> tuple[str, str | None, int | None]:
+    """Validate the prompt/script pair. Attaching a script is admin-only."""
+    if not script:
+        text = (prompt or "").strip()
+        if not text:
+            raise OctopError(
+                ErrorCode.CRON_PROMPT_REQUIRED,
+                "prompt is required when script is not set",
+            )
+        return require_cron_prompt(text), None, None
+    if not getattr(user, "is_admin", False):
+        raise OctopError(ErrorCode.FORBIDDEN, "admin required to schedule a script")
+    text = (prompt or "").strip()
+    return (
+        require_cron_prompt(text) if text else "",
+        normalize_script_spec(script),
+        normalize_script_timeout(script_timeout_s),
+    )
 
 
 @router.get("/cron/settings", summary="Cron server settings")
@@ -135,7 +176,12 @@ async def create_cron(
 
     agent_row = require_agent_row(agent_id, user=user, as_user=None, server=server)
     _assert_cron_manage(agent_id=agent_id, agent_row=agent_row, user=user)
-    prompt = require_cron_prompt(body.prompt)
+    prompt, script, script_timeout_s = _resolve_prompt_and_script(
+        user=user,
+        prompt=body.prompt,
+        script=body.script,
+        script_timeout_s=body.script_timeout_s,
+    )
     cron_id = new_cron_id()
     mcp_servers = (
         await validate_chat_mcp_servers(server, user_id=user.id, names=body.mcp_servers) or []
@@ -144,9 +190,11 @@ async def create_cron(
         cron_id=cron_id,
         agent_id=agent_id,
         user_id=user.id,
-        name=require_cron_name(body.name, prompt=prompt, cron_id=cron_id),
+        name=require_cron_name(body.name, prompt=prompt or script or "", cron_id=cron_id),
         trigger=body.trigger,
         prompt=prompt,
+        script=script,
+        script_timeout_s=script_timeout_s,
         session_key=body.session_key,
         fresh_thread=body.fresh_thread,
         enabled=body.enabled,
@@ -202,11 +250,27 @@ async def patch_cron(
         mcp_arg = await validate_chat_mcp_servers(
             server, user_id=user.id, names=body.mcp_servers or []
         )
+    script_arg: object = UNSET
+    timeout_arg: object = UNSET
+    if "script" in patch_fields:
+        if body.script:
+            if not getattr(user, "is_admin", False):
+                raise OctopError(ErrorCode.FORBIDDEN, "admin required to schedule a script")
+            script_arg = normalize_script_spec(body.script)
+        else:
+            script_arg = None
+            timeout_arg = None
+    if "script_timeout_s" in patch_fields:
+        timeout_arg = normalize_script_timeout(body.script_timeout_s)
     row = await mgr.update(
         cron_id,
         trigger=body.trigger,
         name=(
-            require_cron_name(body.name, prompt=prompt or existing.prompt, cron_id=cron_id)
+            require_cron_name(
+                body.name,
+                prompt=prompt or existing.prompt or existing.script or "",
+                cron_id=cron_id,
+            )
             if "name" in patch_fields
             else None
         ),
@@ -217,6 +281,8 @@ async def patch_cron(
         task_type=normalize_cron_task_type(body.task_type) if body.task_type is not None else None,
         **({"model": (body.model or "").strip() or None} if "model" in patch_fields else {}),
         mcp_servers=mcp_arg,
+        script=script_arg,
+        script_timeout_s=timeout_arg,
     )
     return cast(dict[str, Any], row.to_public_dict(include_agent=True))
 

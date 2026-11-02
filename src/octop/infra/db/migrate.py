@@ -186,6 +186,8 @@ def _ensure_cron_jobs_schema(db: DatabasePool) -> None:
         "mcp_servers",
         "TEXT NOT NULL DEFAULT '[]'",
     )
+    _ensure_column(db, "cron_jobs", "script", "TEXT")
+    _ensure_column(db, "cron_jobs", "script_timeout_s", "INTEGER")
 
 
 def _collapse_legacy_agent_welcome_columns(db: DatabasePool) -> None:
@@ -1987,6 +1989,13 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         _ensure_knowledge_base_icon_url_schema(db)
         _ensure_bridge_icon_url_schema(db)
         _ensure_bridge_shared_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 25:
+        # ``_ensure_cron_jobs_schema`` already adds ``script`` because the v11
+        # upgrade path runs it; going through the helper keeps replays safe.
+        _ensure_cron_jobs_schema(db)
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return

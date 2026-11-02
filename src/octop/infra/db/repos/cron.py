@@ -61,6 +61,14 @@ def _optional_str(r: DbRow, key: str) -> str | None:
     return text or None
 
 
+def _optional_int(r: DbRow, key: str) -> int | None:
+    try:
+        value = r[key]
+    except (KeyError, IndexError):
+        return None
+    return None if value is None else int(value)
+
+
 @dataclass(frozen=True)
 class CronJobRow:
     id: int
@@ -76,6 +84,8 @@ class CronJobRow:
     enabled: int
     task_type: str
     mcp_servers: list[str]
+    script: str | None
+    script_timeout_s: int | None
     last_run_at: int | None
     last_status: str | None
     last_error: str | None
@@ -84,10 +94,12 @@ class CronJobRow:
 
     @classmethod
     def from_row(cls, r: DbRow) -> CronJobRow:
+        script = _optional_str(r, "script")
         return cls(
             id=r["id"],
             cron_id=r["cron_id"],
-            name=_optional_str(r, "name") or default_cron_name(r["prompt"], r["cron_id"]),
+            name=_optional_str(r, "name")
+            or default_cron_name(r["prompt"] or script or "", r["cron_id"]),
             agent_id=r["agent_id"],
             user_id=r["user_id"],
             trigger=r["schedule_spec"],
@@ -98,6 +110,8 @@ class CronJobRow:
             enabled=r["enabled"],
             task_type=normalize_cron_task_type(str(r["task_type"])),
             mcp_servers=_decode_mcp_servers(r["mcp_servers"]),
+            script=script,
+            script_timeout_s=_optional_int(r, "script_timeout_s"),
             last_run_at=r["last_run_at"],
             last_status=r["last_status"],
             last_error=r["last_error"],
@@ -117,6 +131,8 @@ class CronJobRow:
             "enabled": bool(self.enabled),
             "task_type": self.task_type,
             "mcp_servers": list(self.mcp_servers),
+            "script": self.script,
+            "script_timeout_s": self.script_timeout_s,
             "last_run_at": self.last_run_at,
             "last_status": self.last_status,
         }
@@ -145,17 +161,19 @@ class CronJobRepo:
         mcp_servers: list[str] | None = None,
         enabled: bool = True,
         name: str | None = None,
+        script: str | None = None,
+        script_timeout_s: int | None = None,
     ) -> str:
         ts = now_ts()
         with self._db.transaction() as conn:
             conn.execute(
                 "INSERT INTO cron_jobs(cron_id, name, agent_id, user_id, schedule_spec, prompt, "
                 "session_key, model, fresh_thread, task_type, mcp_servers, enabled, "
-                "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "script, script_timeout_s, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     cron_id,
-                    (name or "").strip() or default_cron_name(prompt, cron_id),
+                    (name or "").strip() or default_cron_name(prompt or script or "", cron_id),
                     agent_id,
                     user_id,
                     trigger,
@@ -166,6 +184,8 @@ class CronJobRepo:
                     task_type,
                     _encode_mcp_servers(mcp_servers),
                     bool_int(enabled),
+                    script,
+                    script_timeout_s,
                     ts,
                     ts,
                 ),
@@ -245,6 +265,8 @@ class CronJobRepo:
         task_type: CronTaskType | None = None,
         model: str | None | object = UNSET,
         mcp_servers: list[str] | None | object = UNSET,
+        script: str | None | object = UNSET,
+        script_timeout_s: int | None | object = UNSET,
     ) -> None:
         fields, params = partial_updates(
             [
@@ -266,6 +288,12 @@ class CronJobRepo:
             params.append(
                 _encode_mcp_servers(mcp_servers if isinstance(mcp_servers, list) else None)
             )
+        if script is not UNSET:
+            fields.append("script = ?")
+            params.append(script if isinstance(script, str) else None)
+        if script_timeout_s is not UNSET:
+            fields.append("script_timeout_s = ?")
+            params.append(script_timeout_s)
         if enabled is not None:
             fields.append("enabled = ?")
             params.append(bool_int(enabled))
